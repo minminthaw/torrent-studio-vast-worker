@@ -57,7 +57,10 @@ def validate_command(command: Any, sources: set[str], outputs: set[str]) -> list
         raise ValueError("Invalid ffmpeg command")
     if command[:4] != ["nice", "-n", "10", "ffmpeg"]:
         raise ValueError("Only the managed NVENC ffmpeg command is allowed")
-    if any("\x00" in value or ".." in value or value.startswith("/") for value in command):
+    # subprocess_exec receives an argv array (never a shell command), so movie titles and filter text may
+    # safely contain punctuation. NUL is the only universally invalid argv content; input/output paths are
+    # constrained separately to the validated job-local filenames below.
+    if any("\x00" in value for value in command):
         raise ValueError("Unsafe ffmpeg argument")
     for index, value in enumerate(command[:-1]):
         if value == "-i":
