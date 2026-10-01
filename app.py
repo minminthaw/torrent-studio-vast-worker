@@ -145,7 +145,9 @@ async def execute_job(job_id: str, request_data: dict, directory: Path, state: d
         if state["cancelled"]:
             raise asyncio.CancelledError
         if code != 0:
-            raise RuntimeError(f"ffmpeg exited with code {code}")
+            tail = " | ".join(list(state["log"])[-12:])
+            detail = f": {tail}" if tail else ""
+            raise RuntimeError(f"ffmpeg exited with code {code}{detail}")
 
         metadata = {}
         state["phase"] = "verifying_outputs"
