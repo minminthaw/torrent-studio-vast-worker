@@ -22,6 +22,16 @@ SAFE_JOB = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$")
 JOBS: dict[str, dict[str, Any]] = {}
 
 
+def nvenc_environment() -> dict[str, str]:
+    env = os.environ.copy()
+    # Vast's CUDA images may register the toolkit compatibility libcuda ahead of the host driver.
+    # Consumer RTX cards with an older host driver then fail with CUDA_ERROR_COMPAT_NOT_SUPPORTED_ON_DEVICE.
+    host_driver_path = "/usr/lib/x86_64-linux-gnu"
+    paths = [value for value in env.get("LD_LIBRARY_PATH", "").split(":") if value]
+    env["LD_LIBRARY_PATH"] = ":".join([host_driver_path, *[value for value in paths if value != host_driver_path]])
+    return env
+
+
 def gpu_preflight() -> tuple[bool, str]:
     """Verify that both CUDA visibility and the NVENC session work."""
     try:
@@ -47,7 +57,7 @@ def gpu_preflight() -> tuple[bool, str]:
         "-f",
         "lavfi",
         "-i",
-        "color=c=black:s=128x128:r=1",
+        "color=c=black:s=256x256:r=1",
         "-frames:v",
         "1",
         "-c:v",
@@ -57,7 +67,14 @@ def gpu_preflight() -> tuple[bool, str]:
         "-",
     ]
     try:
-        encoded = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+        encoded = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=nvenc_environment(),
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, f"NVENC preflight failed: {exc}"
 
@@ -205,6 +222,7 @@ async def execute_job(job_id: str, request_data: dict, directory: Path, state: d
         process = await asyncio.create_subprocess_exec(
             *request_data["command"],
             cwd=directory,
+            env=nvenc_environment(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
