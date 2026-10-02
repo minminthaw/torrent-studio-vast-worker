@@ -32,8 +32,31 @@ def nvenc_environment() -> dict[str, str]:
     return env
 
 
+def font_preflight() -> tuple[bool, str]:
+    """Do not allow libass to silently render Myanmar text as square fallback glyphs."""
+    try:
+        result = subprocess.run(
+            ["fc-match", "-f", "%{family}", "Noto Sans Myanmar"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"fontconfig failed: {exc}"
+    family = result.stdout.strip()
+    if result.returncode != 0 or "Noto Sans Myanmar" not in family:
+        detail = (result.stderr or family or "font not found").strip()
+        return False, f"Noto Sans Myanmar is unavailable: {detail}"
+    return True, family
+
+
 def gpu_preflight() -> tuple[bool, str]:
     """Verify that both CUDA visibility and the NVENC session work."""
+    font_ok, font_detail = font_preflight()
+    if not font_ok:
+        return False, font_detail
+
     try:
         visible = subprocess.run(
             ["nvidia-smi", "-L"],
@@ -82,7 +105,7 @@ def gpu_preflight() -> tuple[bool, str]:
         detail = (encoded.stderr or encoded.stdout or "encoder returned an error").strip()
         return False, f"NVENC is unavailable: {detail[-1200:]}"
 
-    return True, visible.stdout.strip()
+    return True, visible.stdout.strip() + f"; font={font_detail}"
 
 
 def gpu_visible() -> tuple[bool, str]:
