@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import signal
+import subprocess
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,69 @@ MODEL_PORT = int(os.environ.get("TORRENT_MODEL_PORT", "8080"))
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
 SAFE_JOB = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$")
 JOBS: dict[str, dict[str, Any]] = {}
+
+
+def gpu_preflight() -> tuple[bool, str]:
+    """Verify that both CUDA visibility and the NVENC session work."""
+    try:
+        visible = subprocess.run(
+            ["nvidia-smi", "-L"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"nvidia-smi failed: {exc}"
+
+    if visible.returncode != 0 or "GPU " not in visible.stdout:
+        detail = (visible.stderr or visible.stdout or "no GPU reported").strip()
+        return False, f"CUDA device is unavailable: {detail[-800:]}"
+
+    command = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=black:s=128x128:r=1",
+        "-frames:v",
+        "1",
+        "-c:v",
+        "h264_nvenc",
+        "-f",
+        "null",
+        "-",
+    ]
+    try:
+        encoded = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"NVENC preflight failed: {exc}"
+
+    if encoded.returncode != 0:
+        detail = (encoded.stderr or encoded.stdout or "encoder returned an error").strip()
+        return False, f"NVENC is unavailable: {detail[-1200:]}"
+
+    return True, visible.stdout.strip()
+
+
+def gpu_visible() -> tuple[bool, str]:
+    """Cheap readiness check used by the platform health probe."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "-L"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, str(exc)
+    if result.returncode == 0 and "GPU " in result.stdout:
+        return True, result.stdout.strip()
+    return False, (result.stderr or result.stdout or "no GPU reported").strip()
 
 
 def json_error(message: str, status: int = 400) -> web.Response:
@@ -73,11 +137,17 @@ def validate_command(command: Any, sources: set[str], outputs: set[str]) -> list
 
 
 async def health(_: web.Request) -> web.Response:
-    return web.json_response({"ok": True})
+    ok, detail = await asyncio.to_thread(gpu_visible)
+    if not ok:
+        return json_error(f"GPU is unavailable: {detail}", 503)
+    return web.json_response({"ok": True, "gpu_ready": True})
 
 
 async def benchmark(_: web.Request) -> web.Response:
-    return web.json_response({"ok": True, "ready": True})
+    ok, detail = await asyncio.to_thread(gpu_preflight)
+    if not ok:
+        return json_error(detail, 503)
+    return web.json_response({"ok": True, "ready": True, "gpu": detail})
 
 
 async def download_source(session: aiohttp.ClientSession, url: str, target: Path, state: dict) -> None:
@@ -165,6 +235,10 @@ async def execute_job(job_id: str, request_data: dict, directory: Path, state: d
 
 
 async def start_task(request: web.Request) -> web.Response:
+    gpu_ok, gpu_detail = await asyncio.to_thread(gpu_preflight)
+    if not gpu_ok:
+        return json_error(f"GPU preflight rejected this worker: {gpu_detail}", 503)
+
     try:
         data = await payload(request)
         job_id = data.get("job_id", "")
@@ -327,5 +401,9 @@ def create_app() -> web.Application:
 
 
 if __name__ == "__main__":
+    gpu_ok, gpu_detail = gpu_preflight()
+    if not gpu_ok:
+        print(f"Torrent encoder fatal: GPU preflight failed: {gpu_detail}", flush=True)
+        raise SystemExit(78)
     print("Torrent encoder ready", flush=True)
     web.run_app(create_app(), host="127.0.0.1", port=MODEL_PORT, print=None)
