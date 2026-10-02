@@ -2,8 +2,12 @@
 set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
+WORKER_DIR="${TORRENT_WORKER_DIR:-/opt/torrent-studio-worker}"
 apt-get update -qq
-apt-get install -y -qq ffmpeg python3 python3-pip python3-venv ca-certificates fontconfig fonts-noto-core
+apt-get install -y -qq ffmpeg python3 python3-pip python3-venv ca-certificates fontconfig
+install -d /usr/local/share/fonts/truetype/noto
+install -m 0644 "$WORKER_DIR/fonts/NotoSansMyanmar-Regular.ttf" /usr/local/share/fonts/truetype/noto/
+install -m 0644 "$WORKER_DIR/fonts/NotoSansMyanmar-Bold.ttf" /usr/local/share/fonts/truetype/noto/
 fc-cache -f
 
 # libass silently falls back to a font without Myanmar glyphs and renders square boxes, so fail the
@@ -13,7 +17,6 @@ if ! fc-match -f '%{family}\n' 'Noto Sans Myanmar' | grep -Fq 'Noto Sans Myanmar
     exit 78
 fi
 
-WORKER_DIR="${TORRENT_WORKER_DIR:-/opt/torrent-studio-worker}"
 MODEL_LOG="${TORRENT_MODEL_LOG:-/var/log/torrent-model.log}"
 mkdir -p "$(dirname "$MODEL_LOG")" /workspace/torrent-serverless-jobs
 touch "$MODEL_LOG"
